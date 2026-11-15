@@ -582,7 +582,15 @@ The server successfully pinged the MikroTik router and was reachable on the loca
 
 I installed Docker Engine and Docker Compose from the official Docker Ubuntu package repository and validated the installation with `sudo docker run --rm hello-world` (which returned **Hello from Docker!**).
 
+![Docker installation verified with the successful hello-world container](images/36-docker-install-verification.webp)
+
+*Docker installation verified with the successful hello-world container. Original screenshot from the setup; identifying details redacted where necessary.*
+
 I deployed the official LibreNMS Docker Compose example, using MariaDB, Redis, the main LibreNMS application, the dispatcher and supporting services. `docker compose ps` showed all seven containers running (including optional syslog and SNMP-trap services). I opened the dashboard in a browser at **`http://192.168.88.229:8000`**, completed initial setup and confirmed the interface was working.
+
+![Docker Compose showing all LibreNMS containers running](images/37-librenms-docker-containers.webp)
+
+*Docker Compose showing all LibreNMS containers running. Original screenshot from the setup; identifying details redacted where necessary.*
 
 > **Network security:** This address is for trusted LAN access only. Do not forward the dashboard port to the internet. The Docker configuration seen during setup also published ports 514 (syslog) and 162 (SNMP traps) on all interfaces; these optional listeners should be disabled or explicitly restricted if they are not needed. Do not publish the Docker `.env` file or SNMP community string.
 
@@ -592,13 +600,21 @@ I enabled SNMP on the RB2011 and created a **read-only SNMPv2c** community, limi
 
 LibreNMS successfully discovered the main router (`192.168.88.1`) as an **RB2011UiAS running RouterOS 6.49.23** and began collecting interface traffic, CPU/memory and device availability metrics.
 
+![LibreNMS detecting the MikroTik RB2011](images/38-librenms-mikrotik-discovery.webp)
+
+*LibreNMS detecting the MikroTik RB2011. Original screenshot from the setup; identifying details redacted where necessary.*
+
 ### Fix missing PPPoE interface in LibreNMS
 
 ![Diagram showing LibreNMS PPPoE discovery filter before and after](images/34-pppoe-discovery-fix.svg)
 
 *Figure 34 — Illustration of the default PPPoE interface exclusion and the successful allow-list fix, based on discovery logs.*
 
-The router's live PPPoE session (`pppoe-homeconnect` over `ether1`) initially did **not** appear in LibreNMS even though the connection was working. I used `snmpwalk` from Ubuntu to check the IF-MIB `ifDescr` and `ifName` tables. Both contained `pppoe-homeconnect` at **interface index 13**.
+The router's live PPPoE session (`pppoe-homeconnect` over `ether1`) initially did **not** appear in LibreNMS even though the connection was working.
+
+![Interface traffic list before adding PPPoE monitoring](images/39-librenms-wan-port-traffic.webp)
+
+*Interface traffic list before adding PPPoE monitoring. Original screenshot from the setup; identifying details redacted where necessary.* I used `snmpwalk` from Ubuntu to check the IF-MIB `ifDescr` and `ifName` tables. Both contained `pppoe-homeconnect` at **interface index 13**.
 
 Verbose LibreNMS discovery revealed the exact cause:
 
@@ -606,7 +622,11 @@ Verbose LibreNMS discovery revealed the exact cause:
 ignored by ifDescr: pppoe-homeconnect (matched: pppoe-)
 ```
 
-The default LibreNMS `bad_if` list contained `pppoe-`, so the PPPoE interface was being deliberately excluded from discovery. I added a targeted RouterOS allow-list entry and rediscovered the ports:
+The default LibreNMS `bad_if` list contained `pppoe-`, so the PPPoE interface was being deliberately excluded from discovery.
+
+![LibreNMS bad_if list showing the PPPoE exclusion](images/40-pppoe-filter-diagnosis.webp)
+
+*LibreNMS bad_if list showing the PPPoE exclusion. Original screenshot from the setup; identifying details redacted where necessary.* I added a targeted RouterOS allow-list entry and rediscovered the ports:
 
 ```bash
 sudo docker exec -u librenms librenms \
@@ -621,6 +641,10 @@ sudo docker exec -u librenms librenms \
 
 **Result:** The PPPoE interface appeared correctly as a PPP port. LibreNMS showed **12 monitored router interfaces**, including `ether1`, `bridge-lan` and `pppoe-homeconnect`. Initial graph collection was still being populated.
 
+![PPPoE interface visible in LibreNMS after the fix](images/41-librenms-pppoe-visible.webp)
+
+*PPPoE interface visible in LibreNMS after the fix. Original screenshot from the setup; identifying details redacted where necessary.*
+
 ### Tenda discovery, DHCP troubleshooting and monitoring
 
 The primary Tenda is wired to the MikroTik and the secondary Tenda extends its Wi-Fi over a wireless uplink. I confirmed the management addresses and configured MikroTik DHCP reservations:
@@ -629,15 +653,35 @@ The primary Tenda is wired to the MikroTik and the secondary Tenda extends its W
 |---|---|---|
 | MikroTik RB2011 | `192.168.88.1` | SNMP monitoring, online |
 | Ubuntu LibreNMS host | `192.168.88.229` | DHCP reservation; LibreNMS deployed |
+
+![MikroTik lease for the Ubuntu monitoring server](images/42-ubuntu-dhcp-reservation.webp)
+
+*MikroTik lease for the Ubuntu monitoring server. Original screenshot from the setup; identifying details redacted where necessary.*
 | Primary Tenda AP | `192.168.88.247` | DHCP reservation; ping-only monitoring, online |
 | Secondary Tenda extender | `192.168.88.242` | DHCP reservation; ping-only monitoring, online |
 | MikroTik hAP ac lite | Unconfirmed after reset | Temporarily disconnected; excluded from active monitoring |
 
-The second Tenda's DHCP lease initially remained in `offered` state and was unreachable when pinged from the RB2011. Its DHCP request source MAC matched the additional hAP ac lite repeater, so I disconnected the hAP while isolating the problem. I then accessed the second Tenda's management page directly from the MacBook and verified its IP and wireless status; later, the RB2011 showed its lease as `bound`. I made the lease static while retaining `.242`.
+The second Tenda's DHCP lease initially remained in `offered` state and was unreachable when pinged from the RB2011.
+
+![Second Tenda management interface showing its wireless extender connection](images/43-tenda-extender-connected.webp)
+
+*Second Tenda management interface showing its wireless extender connection. Original screenshot from the setup; identifying details redacted where necessary.* Its DHCP request source MAC matched the additional hAP ac lite repeater, so I disconnected the hAP while isolating the problem. I then accessed the second Tenda's management page directly from the MacBook and verified its IP and wireless status; later, the RB2011 showed its lease as `bound`. I made the lease static while retaining `.242`.
+
+![Second Tenda DHCP reservation confirmed](images/44-tenda-static-dhcp-lease.webp)
+
+*Second Tenda DHCP reservation confirmed. Original screenshot from the setup; identifying details redacted where necessary.*
 
 I added **both Tendas to LibreNMS with SNMP disabled (ping-only)** because their SNMP support had not been confirmed. The final LibreNMS device list showed the RB2011 and both Tendas **online**.
 
-I also began configuring a custom **Home Network Monitoring** dashboard using availability and device summary widgets, WAN traffic graphs, and planned CPU/memory/latency graphs. Scheduled weekly reporting, alert delivery and long-term service uptime remain future tasks.
+![LibreNMS showing the MikroTik and both Tendas online](images/45-librenms-all-monitored-devices.webp)
+
+*LibreNMS showing the MikroTik and both Tendas online. Original screenshot from the setup; identifying details redacted where necessary.*
+
+I also began configuring a custom **Home Network Monitoring** dashboard using availability and device summary widgets, WAN traffic graphs, and planned CPU/memory/latency graphs.
+
+![LibreNMS dashboard widget options](images/46-librenms-dashboard-widgets.webp)
+
+*LibreNMS dashboard widget options. Original screenshot from the setup; identifying details redacted where necessary.* Scheduled weekly reporting, alert delivery and long-term service uptime remain future tasks.
 
 ---
 
@@ -654,7 +698,11 @@ ALERT! /dev/mapper/ubuntu--vg-ubuntu--lv does not exist.
 Dropping to a shell!
 ```
 
-The immediate checks found no visible `/dev/sd*`, `/dev/nvme*` or `/dev/mmcblk*` disks; `/proc/partitions` showed no block devices and LVM scans did not find the Ubuntu volume group. Repeated `mdadm` messages were present, but those alone did not establish a failed RAID array.
+The immediate checks found no visible `/dev/sd*`, `/dev/nvme*` or `/dev/mmcblk*` disks; `/proc/partitions` showed no block devices and LVM scans did not find the Ubuntu volume group.
+
+![Ubuntu initramfs prompt and missing LVM root](images/47-ubuntu-initramfs-boot-error.webp)
+
+*Ubuntu initramfs prompt and missing LVM root. Original screenshot from the setup; identifying details redacted where necessary.* Repeated `mdadm` messages were present, but those alone did not establish a failed RAID array.
 
 The key boot log message was:
 
@@ -663,7 +711,11 @@ Found 1 remapped NVMe devices.
 Switch your BIOS from RAID to AHCI mode to use them.
 ```
 
-In the Dell BIOS, **Storage → SATA Operation** showed **RAID On** selected, with **AHCI** available. The M.2 PCIe slots remained enabled. The documented next troubleshooting action was to test switching from RAID On to AHCI, since the Linux boot environment could not access the remapped NVMe device.
+In the Dell BIOS, **Storage → SATA Operation** showed **RAID On** selected, with **AHCI** available.
+
+![Dell BIOS showing the Intel RAID On and AHCI options](images/48-dell-bios-raid-on.webp)
+
+*Dell BIOS showing the Intel RAID On and AHCI options. Original screenshot from the setup; identifying details redacted where necessary.* The M.2 PCIe slots remained enabled. The documented next troubleshooting action was to test switching from RAID On to AHCI, since the Linux boot environment could not access the remapped NVMe device.
 
 **Recovery status: Not yet verified.** A successful Ubuntu boot after the BIOS change, Docker container startup and LibreNMS data integrity have **not** been confirmed in the captured steps. No claim of full recovery is made here.
 
