@@ -2,7 +2,7 @@
 
 **MikroTik RouterOS 6 · PPPoE · DHCP · NAT · Firewall · SSH · Tenda APs · Self-hosting**
 
-> **Project status: Home internet and Wi-Fi operational (11 November 2026).** I successfully connected the MikroTik to the fibre ONT and confirmed the internet was working. I also finished configuring the Tenda access points, including one wireless repeater. The screenshots below document configuration steps; no live PPPoE status, speed-test or post-deployment DHCP screenshots were captured. Monitoring and the self-hosted server remain future work.
+> **Project status (15 November 2026):** Main MikroTik internet and Tenda Wi-Fi working. A separate Ubuntu Server laptop was deployed with Docker and LibreNMS; the RB2011 (including its PPPoE interface) and both Tendas were successfully monitored. **Current monitoring-server boot recovery is pending verification** after identifying Dell Intel RST/RAID storage mode as the likely cause. VLAN segmentation and weekly reporting remain future work.
 
 ## Project overview
 
@@ -19,7 +19,8 @@ Instead of dropping the MikroTik straight into the live network, I configured it
 | Existing Home Connect fibre connection | PPPoE WAN through the fibre ONT; internet working (reported after cutover) |
 | Tenda wireless routers | One primary wired AP and another using a wireless Client+AP uplink; setup reported complete |
 | Cisco Packet Tracer | Early topology sketch, not a physical implementation |
-| Self-hosted server | Planned wired endpoint; **not yet migrated** |
+| Ubuntu monitoring laptop | Ubuntu Server 24.04.5 LTS with Docker and LibreNMS; LAN IP `192.168.88.229`; boot recovery currently pending verification |
+| General-purpose self-hosted server | Additional application hosting planned separately |
 
 The RB2011 has **five Gigabit ports (`ether1`–`ether5`)**, **five 100 Mbps ports (`ether6`–`ether10`)**, an SFP port, and **passive PoE output on `ether10`**. It has **no built-in Wi-Fi**. Performance may limit faster fibre services, especially with intensive firewall/VPN workloads.
 
@@ -44,7 +45,8 @@ flowchart TD
     LAN -->|ether2| MAC[MacBook - Management]
     LAN -->|Gigabit LAN cable| AP1[Tenda 1 - Primary AP]
     AP1 -. Wireless uplink .-> AP2[Tenda 2 - Client+AP repeater]
-    LAN -. Future wired connection .-> SRV[Self-hosted server - Planned]
+    LAN -->|Ethernet| MON[Ubuntu monitoring server - 192.168.88.229]
+    LAN -. Future wired connection .-> SRV[Additional self-hosted services - Planned]
 ```
 
 ### Port plan
@@ -559,6 +561,110 @@ The secondary Tenda cannot currently be wired back to the MikroTik. I used its w
 
 ---
 
+## 12. Add a dedicated Ubuntu Server monitoring host (November 2026)
+
+I repurposed an older Dell laptop that had been running Arch Linux as a dedicated network-monitoring host. I installed **Ubuntu Server 24.04.5 LTS** using a bootable USB made with balenaEtcher on my MacBook, then connected the server by Ethernet to the RB2011 LAN.
+
+- Hostname: `network-monitor` (terminal prompt); its original DHCP client hostname was shown as `mayomonitor`.
+- LAN address: `192.168.88.229/24`; DHCP reservation created on the main MikroTik.
+- Default gateway: `192.168.88.1`.
+- Remote administration: OpenSSH from the trusted LAN.
+- Timezone: `Africa/Johannesburg`.
+- Goal: 24/7 collection of traffic, device status and historical metrics, with possible weekly reports later.
+
+The server successfully pinged the MikroTik router and was reachable on the local network. I configured Ubuntu's systemd lid-switch behavior so the laptop could be used headlessly, enabled Docker to start with the OS and configured the LibreNMS containers with restart policies. Long-term unattended uptime still needs validation after the storage boot issue described below.
+
+### Docker and LibreNMS deployment
+
+I installed Docker Engine and Docker Compose from the official Docker Ubuntu package repository and validated the installation with `sudo docker run --rm hello-world` (which returned **Hello from Docker!**).
+
+I deployed the official LibreNMS Docker Compose example, using MariaDB, Redis, the main LibreNMS application, the dispatcher and supporting services. `docker compose ps` showed all seven containers running (including optional syslog and SNMP-trap services). I opened the dashboard in a browser at **`http://192.168.88.229:8000`**, completed initial setup and confirmed the interface was working.
+
+> **Network security:** This address is for trusted LAN access only. Do not forward the dashboard port to the internet. The Docker configuration seen during setup also published ports 514 (syslog) and 162 (SNMP traps) on all interfaces; these optional listeners should be disabled or explicitly restricted if they are not needed. Do not publish the Docker `.env` file or SNMP community string.
+
+### Configure MikroTik SNMP access
+
+I enabled SNMP on the RB2011 and created a **read-only SNMPv2c** community, limited to source **`192.168.88.229/32`**, with the default `public` community disabled. The actual community value is intentionally omitted from this public repository. SNMPv2c is not encrypted, so the interface is accessible only from the trusted monitoring LAN.
+
+LibreNMS successfully discovered the main router (`192.168.88.1`) as an **RB2011UiAS running RouterOS 6.49.23** and began collecting interface traffic, CPU/memory and device availability metrics.
+
+### Fix missing PPPoE interface in LibreNMS
+
+The router's live PPPoE session (`pppoe-homeconnect` over `ether1`) initially did **not** appear in LibreNMS even though the connection was working. I used `snmpwalk` from Ubuntu to check the IF-MIB `ifDescr` and `ifName` tables. Both contained `pppoe-homeconnect` at **interface index 13**.
+
+Verbose LibreNMS discovery revealed the exact cause:
+
+```text
+ignored by ifDescr: pppoe-homeconnect (matched: pppoe-)
+```
+
+The default LibreNMS `bad_if` list contained `pppoe-`, so the PPPoE interface was being deliberately excluded from discovery. I added a targeted RouterOS allow-list entry and rediscovered the ports:
+
+```bash
+sudo docker exec -u librenms librenms \
+  ./lnms config:set os.routeros.good_if.+ pppoe-homeconnect
+
+sudo docker exec -u librenms librenms \
+  ./lnms device:discover 192.168.88.1 -m ports -vv
+
+sudo docker exec -u librenms librenms \
+  ./lnms device:poll 192.168.88.1 -m ports
+```
+
+**Result:** The PPPoE interface appeared correctly as a PPP port. LibreNMS showed **12 monitored router interfaces**, including `ether1`, `bridge-lan` and `pppoe-homeconnect`. Initial graph collection was still being populated.
+
+### Tenda discovery, DHCP troubleshooting and monitoring
+
+The primary Tenda is wired to the MikroTik and the secondary Tenda extends its Wi-Fi over a wireless uplink. I confirmed the management addresses and configured MikroTik DHCP reservations:
+
+| Infrastructure device | LAN IP | Monitoring/status |
+|---|---|---|
+| MikroTik RB2011 | `192.168.88.1` | SNMP monitoring, online |
+| Ubuntu LibreNMS host | `192.168.88.229` | DHCP reservation; LibreNMS deployed |
+| Primary Tenda AP | `192.168.88.247` | DHCP reservation; ping-only monitoring, online |
+| Secondary Tenda extender | `192.168.88.242` | DHCP reservation; ping-only monitoring, online |
+| MikroTik hAP ac lite | Unconfirmed after reset | Temporarily disconnected; excluded from active monitoring |
+
+The second Tenda's DHCP lease initially remained in `offered` state and was unreachable when pinged from the RB2011. Its DHCP request source MAC matched the additional hAP ac lite repeater, so I disconnected the hAP while isolating the problem. I then accessed the second Tenda's management page directly from the MacBook and verified its IP and wireless status; later, the RB2011 showed its lease as `bound`. I made the lease static while retaining `.242`.
+
+I added **both Tendas to LibreNMS with SNMP disabled (ping-only)** because their SNMP support had not been confirmed. The final LibreNMS device list showed the RB2011 and both Tendas **online**.
+
+I also began configuring a custom **Home Network Monitoring** dashboard using availability and device summary widgets, WAN traffic graphs, and planned CPU/memory/latency graphs. Scheduled weekly reporting, alert delivery and long-term service uptime remain future tasks.
+
+---
+
+## 13. Troubleshoot Ubuntu boot failure and Intel RST / RAID mode
+
+After LibreNMS was deployed, the Dell laptop later failed to boot and dropped into the BusyBox `(initramfs)` shell:
+
+```text
+ALERT! /dev/mapper/ubuntu--vg-ubuntu--lv does not exist.
+Dropping to a shell!
+```
+
+The immediate checks found no visible `/dev/sd*`, `/dev/nvme*` or `/dev/mmcblk*` disks; `/proc/partitions` showed no block devices and LVM scans did not find the Ubuntu volume group. Repeated `mdadm` messages were present, but those alone did not establish a failed RAID array.
+
+The key boot log message was:
+
+```text
+Found 1 remapped NVMe devices.
+Switch your BIOS from RAID to AHCI mode to use them.
+```
+
+In the Dell BIOS, **Storage → SATA Operation** showed **RAID On** selected, with **AHCI** available. The M.2 PCIe slots remained enabled. The documented next troubleshooting action was to test switching from RAID On to AHCI, since the Linux boot environment could not access the remapped NVMe device.
+
+**Recovery status: Not yet verified.** A successful Ubuntu boot after the BIOS change, Docker container startup and LibreNMS data integrity have **not** been confirmed in the captured steps. No claim of full recovery is made here.
+
+### Follow-up checks after storage recovery
+
+1. Confirm the SSD is visible using `lsblk` and the Ubuntu LVM root is available.
+2. Boot Ubuntu and confirm `systemctl is-enabled docker` and `sudo docker compose ps`.
+3. Confirm LAN reachability and open `http://192.168.88.229:8000`.
+4. Verify SNMP polling and traffic graph history continue correctly.
+5. Back up the LibreNMS configuration and persistent database/metrics volumes, then document the final stable BIOS storage setting.
+
+---
+
 ## Current results and outstanding tests
 
 | Check | Status | Evidence |
@@ -576,15 +682,16 @@ The secondary Tenda cannot currently be wired back to the MikroTik. I used its w
 | Fibre ONT / internet cutover | ✅ Working, reported | Successful live internet after connecting ONT; no new screenshot |
 | Primary Tenda AP and secondary repeater | ✅ Setup reported complete | Figure 32 documents repeating configuration screen; final mode not pictured |
 | Client IP verification across both Tendas | ⏳ Not captured | Add device/gateway screenshots later |
-| Network monitoring / LibreNMS | ⏳ Planned, not installed | Future project |
-| Self-hosted server | ⏳ Planned, not deployed | Future project |
+| Network monitoring / LibreNMS | ✅ Deployed and tested; currently offline pending server boot recovery | RB2011 SNMP + PPPoE, both Tendas ping-only |
+| Ubuntu monitoring host / storage | ⚠️ Boot recovery pending verification | Dell BIOS RAID On / Intel RST, AHCI troubleshooting |
+| Additional self-hosted applications | ⏳ Planned | Future project |
 
 ## Possible next improvements
 
 1. Capture a redacted successful PPPoE status screen, default-route details and an internet speed test.
 2. Capture the **final** AP/repeater configuration and confirm wireless clients receive the MikroTik gateway and DHCP leases.
-3. Add SNMP-based network monitoring with LibreNMS on a separate Linux machine or virtual server.
-4. Add offline/uptime alerts and router bandwidth monitoring.
+3. Restore and verify Ubuntu Server booting, then confirm LibreNMS SNMP polling and container restart policies.
+4. Complete LibreNMS dashboard graphs, outage alerts, and weekly traffic reports.
 5. Evaluate network isolation (guest/IoT/server VLANs) and verify the Tendas support the required VLAN/SSID features before redesigning the firewall.
 6. Revisit management hardening, backup strategy and administrative user accounts.
 
@@ -618,4 +725,4 @@ The secondary Tenda cannot currently be wired back to the MikroTik. I used its w
 
 ---
 
-*This repository documents a working home router and Wi-Fi upgrade, with later network monitoring, self-hosting and VLAN segmentation planned as separate phases.*
+*This repository documents a working home router and Wi-Fi upgrade, an initial LibreNMS monitoring deployment, and active troubleshooting of the Ubuntu monitoring host. Additional self-hosting and VLAN segmentation remain future phases.*
