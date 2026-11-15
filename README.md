@@ -563,6 +563,10 @@ The secondary Tenda cannot currently be wired back to the MikroTik. I used its w
 
 ## 12. Add a dedicated Ubuntu Server monitoring host (November 2026)
 
+![Monitoring network topology showing MikroTik, Ubuntu LibreNMS, and both Tenda devices](images/33-librenms-monitoring-topology.svg)
+
+*Figure 33 — Illustrative diagram of the monitored topology. Created from the verified device configuration; not a screenshot.*
+
 I repurposed an older Dell laptop that had been running Arch Linux as a dedicated network-monitoring host. I installed **Ubuntu Server 24.04.5 LTS** using a bootable USB made with balenaEtcher on my MacBook, then connected the server by Ethernet to the RB2011 LAN.
 
 - Hostname: `network-monitor` (terminal prompt); its original DHCP client hostname was shown as `mayomonitor`.
@@ -589,6 +593,10 @@ I enabled SNMP on the RB2011 and created a **read-only SNMPv2c** community, limi
 LibreNMS successfully discovered the main router (`192.168.88.1`) as an **RB2011UiAS running RouterOS 6.49.23** and began collecting interface traffic, CPU/memory and device availability metrics.
 
 ### Fix missing PPPoE interface in LibreNMS
+
+![Diagram showing LibreNMS PPPoE discovery filter before and after](images/34-pppoe-discovery-fix.svg)
+
+*Figure 34 — Illustration of the default PPPoE interface exclusion and the successful allow-list fix, based on discovery logs.*
 
 The router's live PPPoE session (`pppoe-homeconnect` over `ether1`) initially did **not** appear in LibreNMS even though the connection was working. I used `snmpwalk` from Ubuntu to check the IF-MIB `ifDescr` and `ifName` tables. Both contained `pppoe-homeconnect` at **interface index 13**.
 
@@ -634,6 +642,10 @@ I also began configuring a custom **Home Network Monitoring** dashboard using av
 ---
 
 ## 13. Troubleshoot Ubuntu boot failure and Intel RST / RAID mode
+
+![Diagram of Dell Ubuntu boot failure diagnosis, Intel RST finding, and AHCI test](images/35-ubuntu-boot-diagnostics.svg)
+
+*Figure 35 — Boot troubleshooting summary. Switching to AHCI was proposed, but successful recovery has not yet been verified.*
 
 After LibreNMS was deployed, the Dell laptop later failed to boot and dropped into the BusyBox `(initramfs)` shell:
 
